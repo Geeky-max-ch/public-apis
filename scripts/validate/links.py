@@ -3,16 +3,20 @@
 import re
 import sys
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple
 
 import requests
 from requests.models import Response
 
+DEFAULT_TIMEOUT = 15
+MAX_WORKERS = 10
+
 
 def find_links_in_text(text: str) -> List[str]:
     """Find links in a text and return a list of URLs."""
 
-    link_pattern = re.compile(r'((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s`!()\[\]{};:\'\".,<>?«»“”‘’]))')
+    link_pattern = re.compile(r'((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s`!()\[\]{};:\'".,<>?«»“”‘’]))')
 
     raw_links = re.findall(link_pattern, text)
 
@@ -111,7 +115,7 @@ def has_cloudflare_protection(resp: Response) -> bool:
 
     Discussions in issues and pull requests:
         - https://github.com/public-apis/public-apis/pull/2409
-        - https://github.com/public-apis/public-apis/issues/2960 
+        - https://github.com/public-apis/public-apis/issues/2960
     """
 
     code = resp.status_code
@@ -163,12 +167,17 @@ def check_if_link_is_working(link: str) -> Tuple[bool, str]:
 
     has_error = False
     error_message = ''
+    session = requests.Session()
 
     try:
-        resp = requests.get(link, timeout=25, headers={
-            'User-Agent': fake_user_agent(),
-            'host': get_host_from_link(link)
-        })
+        resp = session.get(
+            link,
+            timeout=DEFAULT_TIMEOUT,
+            headers={
+                'User-Agent': fake_user_agent(),
+                'host': get_host_from_link(link)
+            }
+        )
 
         code = resp.status_code
 
@@ -196,18 +205,36 @@ def check_if_link_is_working(link: str) -> Tuple[bool, str]:
         has_error = True
         error_message = f'ERR:UKN: {error} : {link}'
 
+    finally:
+        session.close()
+
     return (has_error, error_message)
 
 
 def check_if_list_of_links_are_working(list_of_links: List[str]) -> List[str]:
-    error_messages = []
-    for link in list_of_links:
-        has_error, error_message = check_if_link_is_working(link)
+    """Validate links in parallel and return the error messages."""
+    if not list_of_links:
+        return []
 
-        if has_error:
-            error_messages.append(error_message)
+    unique_links = list(dict.fromkeys(link.strip() for link in list_of_links))
+    errors = []
 
-    return error_messages
+    max_workers = min(MAX_WORKERS, len(unique_links))
+    if max_workers <= 0:
+        max_workers = 1
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_link = {
+            executor.submit(check_if_link_is_working, link): link
+            for link in unique_links
+        }
+
+        for future in as_completed(future_to_link):
+            has_error, error_message = future.result()
+            if has_error:
+                errors.append(error_message)
+
+    return errors
 
 
 def start_duplicate_links_checker(links: List[str]) -> None:
