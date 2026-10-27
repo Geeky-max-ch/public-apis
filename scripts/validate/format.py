@@ -40,16 +40,17 @@ def error_message(line_number: int, message: str) -> str:
 
 
 def get_categories_content(contents: List[str]) -> Tuple[Categories, CategoriesLineNumber]:
+    """Return category names and the line number of each category header."""
 
     categories = {}
     category_line_num = {}
+    current_category = None
 
     for line_num, line_content in enumerate(contents):
-
         if line_content.startswith(anchor):
-            category = line_content.split(anchor)[1].strip()
-            categories[category] = []
-            category_line_num[category] = line_num
+            current_category = line_content.split(anchor)[1].strip()
+            categories[current_category] = []
+            category_line_num[current_category] = line_num
             continue
 
         if not line_content.startswith('|') or line_content.startswith('|---'):
@@ -60,11 +61,45 @@ def get_categories_content(contents: List[str]) -> Tuple[Categories, CategoriesL
         ][0]
 
         title_match = link_re.match(raw_title)
-        if title_match:
-                title = title_match.group(1).upper()
-                categories[category].append(title)
+        if title_match and current_category is not None:
+            title = title_match.group(1).upper()
+            categories[current_category].append(title)
 
     return (categories, category_line_num)
+
+
+def collect_category_data(lines: List[str]) -> Tuple[Categories, CategoriesLineNumber, List[str]]:
+    """Single-pass collection of all category metadata used during validation."""
+
+    categories = {}
+    category_line_num = {}
+    category_title_in_index = []
+    current_category = None
+
+    for line_num, line_content in enumerate(lines):
+        category_title_match = category_title_in_index_re.match(line_content)
+        if category_title_match:
+            category_title_in_index.append(category_title_match.group(1))
+
+        if line_content.startswith(anchor):
+            current_category = line_content.split(anchor)[1].strip()
+            categories[current_category] = []
+            category_line_num[current_category] = line_num
+            continue
+
+        if not line_content.startswith('|') or line_content.startswith('|---'):
+            continue
+
+        raw_title = [
+            raw_content.strip() for raw_content in line_content.split('|')[1:-1]
+        ][0]
+
+        title_match = link_re.match(raw_title)
+        if title_match and current_category is not None:
+            title = title_match.group(1).upper()
+            categories[current_category].append(title)
+
+    return (categories, category_line_num, category_title_in_index)
 
 
 def check_alphabetical_order(lines: List[str]) -> List[str]:
@@ -76,11 +111,11 @@ def check_alphabetical_order(lines: List[str]) -> List[str]:
     for category, api_list in categories.items():
         if sorted(api_list) != api_list:
             err_msg = error_message(
-                category_line_num[category], 
+                category_line_num[category],
                 f'{category} category is not alphabetical order'
             )
             err_msgs.append(err_msg)
-    
+
     return err_msgs
 
 
@@ -122,7 +157,7 @@ def check_description(line_num: int, description: str) -> List[str]:
     if desc_length > max_description_length:
         err_msg = error_message(line_num, f'description should not exceed {max_description_length} characters (currently {desc_length})')
         err_msgs.append(err_msg)
-    
+
     return err_msgs
 
 
@@ -138,7 +173,7 @@ def check_auth(line_num: int, auth: str) -> List[str]:
     if auth.replace(backtick, '') not in auth_keys:
         err_msg = error_message(line_num, f'{auth} is not a valid Auth option')
         err_msgs.append(err_msg)
-    
+
     return err_msgs
 
 
@@ -160,7 +195,7 @@ def check_cors(line_num: int, cors: str) -> List[str]:
     if cors not in cors_keys:
         err_msg = error_message(line_num, f'{cors} is not a valid CORS option')
         err_msgs.append(err_msg)
-    
+
     return err_msgs
 
 
@@ -192,21 +227,21 @@ def check_entry(line_num: int, segments: List[str]) -> List[str]:
 def check_file_format(lines: List[str]) -> List[str]:
 
     err_msgs = []
-    category_title_in_index = []
 
-    alphabetical_err_msgs = check_alphabetical_order(lines)
-    err_msgs.extend(alphabetical_err_msgs)
+    categories, category_line_num, category_title_in_index = collect_category_data(lines)
+    for category, api_list in categories.items():
+        if sorted(api_list) != api_list:
+            err_msg = error_message(
+                category_line_num[category],
+                f'{category} category is not alphabetical order'
+            )
+            err_msgs.append(err_msg)
 
     num_in_category = min_entries_per_category + 1
     category = ''
     category_line = 0
 
     for line_num, line_content in enumerate(lines):
-
-        category_title_match = category_title_in_index_re.match(line_content)
-        if category_title_match:
-            category_title_in_index.append(category_title_match.group(1))
-
         # check each category for the minimum number of entries
         if line_content.startswith(anchor):
             category_match = anchor_re.match(line_content)
@@ -237,17 +272,17 @@ def check_file_format(lines: List[str]) -> List[str]:
             err_msg = error_message(line_num, f'entry does not have all the required columns (have {len(segments)}, need {num_segments})')
             err_msgs.append(err_msg)
             continue
-    
+
         for segment in segments:
             # every line segment should start and end with exactly 1 space
             if len(segment) - len(segment.lstrip()) != 1 or len(segment) - len(segment.rstrip()) != 1:
                 err_msg = error_message(line_num, 'each segment must start and end with exactly 1 space')
                 err_msgs.append(err_msg)
-        
+
         segments = [segment.strip() for segment in segments]
         entry_err_msgs = check_entry(line_num, segments)
         err_msgs.extend(entry_err_msgs)
-    
+
     return err_msgs
 
 
